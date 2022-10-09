@@ -2,21 +2,20 @@ package tel.panfilov.maven.plugins.reposync;
 
 import org.apache.maven.RepositoryUtils;
 import org.apache.maven.model.DependencyManagement;
+import org.apache.maven.model.Plugin;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
 import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.project.MavenProject;
 import org.eclipse.aether.artifact.Artifact;
+import org.eclipse.aether.artifact.ArtifactType;
 import org.eclipse.aether.artifact.ArtifactTypeRegistry;
+import org.eclipse.aether.artifact.DefaultArtifact;
 import org.eclipse.aether.collection.CollectRequest;
 import org.eclipse.aether.graph.Dependency;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 import java.util.stream.Collectors;
 
 /**
@@ -25,12 +24,15 @@ import java.util.stream.Collectors;
 @Mojo(name = "reactor", threadSafe = true, requiresOnline = true, aggregator = true)
 public class ReactorSyncMojo extends AbstractSyncMojo {
 
+    private static final String MAVEN_PLUGIN_ARTIFACT_TYPE = "maven-plugin";
+
     protected final Set<String> ignoreScopes = new HashSet<>();
     /**
      * Scope threshold to include
      */
     @Parameter(property = "scope", defaultValue = DEFAULT_SCOPE)
     protected String scope = DEFAULT_SCOPE;
+
     /**
      * Contains the full list of projects in the reactor.
      */
@@ -51,12 +53,24 @@ public class ReactorSyncMojo extends AbstractSyncMojo {
         Set<Artifact> artifactSet = new HashSet<>();
         for (MavenProject project : reactorProjects) {
             artifactSet.addAll(collectDependencies(project));
+            artifactSet.addAll(collectPlugins(project));
         }
-        for (MavenProject project : reactorProjects) {
-            artifactSet.remove(RepositoryUtils.toArtifact(project.getArtifact()));
-        }
-        List<Artifact> artifacts = new ArrayList<>(artifactSet);
-        return getExistingArtifacts(addClassifiersAndPoms(artifacts));
+        return getExistingArtifacts(addClassifiersAndPoms(new ArrayList<>(artifactSet))).stream()
+                .filter(this::isNotReactorProjectArtifact)
+                .collect(Collectors.toList());
+    }
+
+    private Collection<Artifact> collectPlugins(MavenProject project) {
+        return project.getBuildPlugins().stream()
+                .map(this::toArtifact)
+                .collect(Collectors.toList());
+    }
+
+    private Artifact toArtifact(Plugin plugin) {
+        ArtifactTypeRegistry typeRegistry = RepositoryUtils.newArtifactTypeRegistry(artifactHandlerManager);
+        ArtifactType artifactType = typeRegistry.get(MAVEN_PLUGIN_ARTIFACT_TYPE);
+        return new DefaultArtifact(plugin.getGroupId(), plugin.getArtifactId(), artifactType.getClassifier(), artifactType.getExtension(), plugin.getVersion(),
+                artifactType);
     }
 
     protected Collection<Artifact> collectDependencies(MavenProject project) throws MojoFailureException, MojoExecutionException {
@@ -90,4 +104,14 @@ public class ReactorSyncMojo extends AbstractSyncMojo {
         return !ignoreScopes.contains(dependency.getScope());
     }
 
+    private boolean isNotReactorProjectArtifact(Artifact artifact) {
+        return reactorProjects.stream()
+                .map(MavenProject::getArtifact)
+                .map(RepositoryUtils::toArtifact)
+                .noneMatch(projectArtifact ->
+                        Objects.equals(projectArtifact.getGroupId(), artifact.getGroupId()) &&
+                                Objects.equals(projectArtifact.getArtifactId(), artifact.getArtifactId()) &&
+                                Objects.equals(projectArtifact.getVersion(), artifact.getVersion())
+                );
+    }
 }

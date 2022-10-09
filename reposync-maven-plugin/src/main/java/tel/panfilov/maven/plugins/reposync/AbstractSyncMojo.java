@@ -1,5 +1,6 @@
 package tel.panfilov.maven.plugins.reposync;
 
+import org.apache.maven.BuildFailureException;
 import org.apache.maven.RepositoryUtils;
 import org.apache.maven.artifact.handler.ArtifactHandler;
 import org.apache.maven.artifact.handler.manager.ArtifactHandlerManager;
@@ -18,7 +19,6 @@ import org.apache.maven.plugin.logging.Log;
 import org.apache.maven.plugins.annotations.Component;
 import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.repository.RepositorySystem;
-import org.apache.maven.repository.internal.ArtifactDescriptorReaderDelegate;
 import org.apache.maven.repository.internal.ArtifactDescriptorUtils;
 import org.apache.maven.settings.Settings;
 import org.codehaus.plexus.util.StringUtils;
@@ -34,26 +34,15 @@ import org.eclipse.aether.graph.Dependency;
 import org.eclipse.aether.impl.ArtifactDescriptorReader;
 import org.eclipse.aether.impl.ArtifactResolver;
 import org.eclipse.aether.repository.RemoteRepository;
-import org.eclipse.aether.resolution.ArtifactDescriptorException;
-import org.eclipse.aether.resolution.ArtifactDescriptorPolicy;
-import org.eclipse.aether.resolution.ArtifactDescriptorRequest;
-import org.eclipse.aether.resolution.ArtifactDescriptorResult;
-import org.eclipse.aether.resolution.ArtifactRequest;
-import org.eclipse.aether.resolution.ArtifactResolutionException;
-import org.eclipse.aether.resolution.ArtifactResult;
+import org.eclipse.aether.resolution.*;
 import org.eclipse.aether.transfer.ArtifactNotFoundException;
 import tel.panfilov.maven.plugins.reposync.component.DependencyCollector;
-import tel.panfilov.maven.plugins.reposync.component.ModelAwareArtifactDescriptorReader;
 import tel.panfilov.maven.plugins.reposync.component.RepositoryArtifactChecker;
 import tel.panfilov.maven.plugins.reposync.component.ScopeMediator;
+import tel.panfilov.maven.plugins.reposync.reader.ArtifactInterimModelReader;
+import tel.panfilov.maven.plugins.reposync.reader.ArtifactInterimModelResult;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -91,6 +80,9 @@ public abstract class AbstractSyncMojo extends AbstractMojo {
 
     @Component
     protected ArtifactDescriptorReader artifactDescriptorReader;
+
+    @Component
+    protected ArtifactInterimModelReader artifactInterimModelReader;
 
     @Component
     protected DependencyCollector dependencyCollector;
@@ -320,8 +312,6 @@ public abstract class AbstractSyncMojo extends AbstractMojo {
         try {
             List<Artifact> discovered = new ArrayList<>();
             DefaultRepositorySystemSession repositorySession = new DefaultRepositorySystemSession(session.getRepositorySession());
-            ModelAwareArtifactDescriptorReader descriptorReader = new ModelAwareArtifactDescriptorReader();
-            repositorySession.setConfigProperty(ArtifactDescriptorReaderDelegate.class.getName(), descriptorReader);
             repositorySession.setArtifactDescriptorPolicy((s, r) -> ArtifactDescriptorPolicy.IGNORE_ERRORS);
             Set<String> seen = new HashSet<>();
             while (!poms.isEmpty()) {
@@ -331,15 +321,15 @@ public abstract class AbstractSyncMojo extends AbstractMojo {
                         continue;
                     }
                     ArtifactDescriptorRequest request = new ArtifactDescriptorRequest(artifact, getSourceRepositories(), null);
-                    ArtifactDescriptorResult descriptor = artifactDescriptorReader.readArtifactDescriptor(repositorySession, request);
-                    if (descriptor == null) {
+                    ArtifactInterimModelResult result = artifactInterimModelReader.readArtifactInterimModel(repositorySession, request);
+                    if (result == null) {
                         continue;
                     }
-                    Model model = descriptorReader.getModel(artifact);
+                    Model model = result.getModel();
                     if (model == null) {
                         continue;
                     }
-                    discovered.add(descriptor.getArtifact());
+                    discovered.add(result.getArtifact());
                     Parent parent = model.getParent();
                     if (parent != null) {
                         next.add(Utils.getPomArtifact(parent));
@@ -358,7 +348,7 @@ public abstract class AbstractSyncMojo extends AbstractMojo {
                 poms = next;
             }
             return discovered;
-        } catch (ArtifactDescriptorException ex) {
+        } catch (BuildFailureException ex) {
             throw new MojoExecutionException("Failed to load poms", ex);
         }
     }
